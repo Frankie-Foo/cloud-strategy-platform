@@ -53,8 +53,39 @@ class AccessScope(StrEnum):
     SIGNALS_READ = "signals:read"
     FEATURES_READ = "features:read"
     MARKET_DATA_READ = "market-data:read"
+    MARKET_DATA_WRITE = "market-data:write"
     PAPER_READ = "paper:read"
     PAPER_WRITE = "paper:write"
+
+
+class MarketDataSubscriptionRequest(FrozenModel):
+    symbols: tuple[str, ...] = Field(min_length=1, max_length=500)
+    replay_from_utc: datetime
+    expires_at_utc: datetime
+
+    @field_validator("symbols")
+    @classmethod
+    def normalize_symbols(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(sorted({value.strip().upper() for value in values}))
+        if not normalized or any(
+            re.fullmatch(r"[A-Z][A-Z0-9.-]{0,15}", value) is None
+            for value in normalized
+        ):
+            raise ValueError("subscription contains an invalid symbol")
+        return normalized
+
+    @field_validator("replay_from_utc", "expires_at_utc")
+    @classmethod
+    def utc_timestamps(cls, value: datetime) -> datetime:
+        return require_utc(value)
+
+    @model_validator(mode="after")
+    def valid_window(self) -> MarketDataSubscriptionRequest:
+        if self.expires_at_utc <= self.replay_from_utc:
+            raise ValueError("subscription expiry must follow replay start")
+        if self.expires_at_utc - self.replay_from_utc > timedelta(days=2):
+            raise ValueError("subscription window cannot exceed two days")
+        return self
 
 
 class StrategyDefinition(FrozenModel):

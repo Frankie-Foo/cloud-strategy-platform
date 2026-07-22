@@ -12,7 +12,8 @@ It contains no Live endpoint, generic Alpaca proxy, TradePlan promotion, or shor
 - Strategy configuration, selection, backtest, Paper/shadow, and review artifacts are
   isolated by `strategy_id`.
 - AI investment services use an HTTPS `features:read` token.
-- AI market ingestion uses a separate `market-data:read` token.
+- AI market ingestion uses a separate `market-data:write` token, which can lease symbols
+  and read the normalized event stream.
 - AI Paper execution uses a separate `paper:write` token; writes are disabled by default.
 - Collaborators use a strategy-specific `signals:read` token.
 - Normalized market events are exposed only to separately scoped AI service identities;
@@ -46,24 +47,25 @@ Register a strategy, issue a service token, and start the loopback API:
 .\.venv\Scripts\python -m scripts.issue_token `
   --principal ai-quant --scope features:read
 .\.venv\Scripts\python -m scripts.issue_token `
-  --principal ai-quant-market --scope market-data:read
+  --principal ai-quant-market --scope market-data:write
 .\.venv\Scripts\python -m scripts.issue_token `
   --principal ai-quant-execution --scope paper:write
 .\.venv\Scripts\python -m scripts.serve_api --host 127.0.0.1 --port 8765
 ```
 
-For the local AI-investment client, install the independent API as a per-user Windows
-task and start it immediately:
+For the local AI-investment client, install the independent API and the single SIP owner
+as per-user Windows services and start them immediately:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install_local_api_task.ps1
 ```
 
-The installer prefers a restartable scheduled task. If Windows denies task registration,
-it installs a current-user Startup shortcut instead. Both paths listen only on
-`127.0.0.1:8765` and write logs under the ignored `runs/` directory. Internet-facing
-deployment still requires HTTPS through a reverse proxy; never expose this plain-HTTP
-listener beyond localhost.
+The installer prefers restartable scheduled tasks. If Windows denies task registration,
+it installs current-user Startup shortcuts instead. Both service runners restart after
+an unexpected exit. Only the API listens on `127.0.0.1:8765`; the SIP owner keeps the
+cloud-owned provider connection and writes under the ignored `runs/` directory.
+Internet-facing deployment still requires HTTPS through a reverse proxy; never expose
+the plain-HTTP API listener beyond localhost.
 
 For production, keep the Python server on a private interface behind an authenticated
 TLS reverse proxy. Never bind it directly to the public internet.
@@ -76,10 +78,15 @@ The SIP owner reads `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` only in its 
 
 No other service identity should receive those two variables.
 
+The realtime ledger keeps every minute bar and samples at most one quote per symbol per
+UTC second. This preserves NBBO freshness for the strategies without allowing a high-rate
+symbol to starve minute bars or the remaining subscriptions.
+
 ## Market-data rights
 
 Publishing this source code does not grant a right to redistribute Alpaca or exchange
-market data. The `market-data:read` routes are intended for separately authorized,
+market data. The `market-data:write` subscription and `market-data:read` routes are
+intended for separately authorized,
 owner-controlled services. Do not issue that scope to collaborators or expose those
 routes as a public data feed. Alpaca states that its API data may not be redistributed;
 obtain written permission or an appropriate enterprise agreement before any internal or

@@ -67,6 +67,18 @@ class RawSipEventStore:
                 connection.execute("SELECT COUNT(*) FROM raw_sip_event_log").fetchone()[0]
             )
 
+    def sequence_before(self, ts_utc: datetime) -> int:
+        require_utc(ts_utc)
+        with _connect(self.path) as connection:
+            value = connection.execute(
+                """
+                SELECT COALESCE(MAX(sequence), 0) FROM raw_sip_event_log
+                WHERE ts_utc<?
+                """,
+                (ts_utc.isoformat(),),
+            ).fetchone()[0]
+        return int(value)
+
     def list_after(
         self,
         *,

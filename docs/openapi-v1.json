@@ -144,6 +144,45 @@
         }
       }
     },
+    "/v1/market-data/subscriptions": {
+      "post": {
+        "tags": ["Normalized market data"],
+        "operationId": "leaseNormalizedSipSubscription",
+        "summary": "Lease symbols to the single cloud SIP owner",
+        "description": "The authorized AI ingestion client declares a bounded symbol lease before polling. The response cursor permits replay of already persisted events from replay_from_utc while the cloud SIP owner dynamically maintains the current union of active leases.",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "market-data:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/MarketDataSubscriptionRequest"},
+              "example": {
+                "symbols": ["AAPL", "MSFT"],
+                "replay_from_utc": "2026-07-22T14:30:00Z",
+                "expires_at_utc": "2026-07-22T21:05:00Z"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Normalized leased symbols, expiry, and the exclusive event cursor immediately before replay_from_utc.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/MarketDataSubscriptionResponse"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
     "/v1/market-data/events": {
       "get": {
         "tags": ["Normalized market data"],
@@ -707,6 +746,37 @@
         "properties": {
           "sequence": {"type": "integer", "minimum": 1},
           "event": {"oneOf": [{"$ref": "#/components/schemas/SipBar"}, {"$ref": "#/components/schemas/SipQuote"}], "discriminator": {"propertyName": "event_type"}}
+        }
+      },
+      "MarketDataSubscriptionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbols", "replay_from_utc", "expires_at_utc"],
+        "properties": {
+          "symbols": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 500,
+            "items": {"$ref": "#/components/schemas/Symbol"}
+          },
+          "replay_from_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "expires_at_utc": {"$ref": "#/components/schemas/UtcTimestamp"}
+        }
+      },
+      "MarketDataSubscriptionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "symbols", "expires_at_utc", "start_after_sequence"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "symbols": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 500,
+            "items": {"$ref": "#/components/schemas/Symbol"}
+          },
+          "expires_at_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "start_after_sequence": {"type": "integer", "minimum": 0}
         }
       },
       "MarketEventsResponse": {
