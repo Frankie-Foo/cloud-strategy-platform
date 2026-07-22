@@ -1,0 +1,958 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cloud Strategy Platform API",
+    "version": "1.0.0",
+    "summary": "Implemented v1 boundary for derived signals, features, normalized SIP data, and guarded Alpaca Paper access.",
+    "description": "This specification contains only routes implemented by the current server. Collaborator tokens are strategy-bound and can read derived signals only. Alpaca credentials, generic proxy routes, Live trading, and short selling are not part of the contract. The v1 Paper routes are account-global compatibility routes and are not yet isolated by strategy_id; see the target-platform design for the planned strategy-scoped contract."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8765",
+      "description": "Loopback development server only"
+    },
+    {
+      "url": "https://{platformHost}",
+      "description": "Production HTTPS endpoint",
+      "variables": {
+        "platformHost": {
+          "default": "platform.example.com"
+        }
+      }
+    }
+  ],
+  "tags": [
+    {"name": "Health"},
+    {"name": "Collaborator signals"},
+    {"name": "Point-in-time features"},
+    {"name": "Normalized market data"},
+    {"name": "Guarded Paper trading", "description": "Account-global v1 compatibility boundary. It is Paper-only, long-only, scope protected, and disabled for writes by default, but it is not yet strategy_id-isolated."}
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["Health"],
+        "operationId": "getHealth",
+        "summary": "Check API process readiness",
+        "description": "Does not validate upstream Alpaca availability and does not disclose credentials, symbols, strategies, or account state.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The API process is ready to accept requests.",
+            "headers": {
+              "Cache-Control": {"$ref": "#/components/headers/CacheControl"}
+            },
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/HealthResponse"},
+                "example": {"api_version": "v1", "status": "ready"}
+              }
+            }
+          },
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"}
+        }
+      }
+    },
+    "/v1/strategies/{strategy_id}/signals": {
+      "get": {
+        "tags": ["Collaborator signals"],
+        "operationId": "listDerivedSignals",
+        "summary": "List derived signals for one authorized strategy",
+        "description": "The bearer token must have signals:read and be bound to exactly the requested strategy_id. The response never contains raw SIP payloads, provider credentials, Paper account state, or order functions.",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "signals:read",
+        "parameters": [
+          {"$ref": "#/components/parameters/StrategyId"},
+          {"$ref": "#/components/parameters/SinceUtc"}
+        ],
+        "responses": {
+          "200": {
+            "description": "Authorized strategy signals, ordered by UTC time and signal id.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SignalsResponse"},
+                "example": {
+                  "api_version": "v1",
+                  "principal_id": "alice",
+                  "signals": [
+                    {
+                      "signal_id": "sig-20260722-aapl-1",
+                      "strategy_id": "gap_momentum_a",
+                      "strategy_version": "2026.07.22",
+                      "symbol": "AAPL",
+                      "asof_utc": "2026-07-22T15:31:00Z",
+                      "action": "enter_long",
+                      "reason": "safe expression matched",
+                      "feature_provenance": ["alpaca.sip.websocket@2026-07-22T15:31:00+00:00|feature:minute_return@sip.minute.v1"]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"}
+        }
+      }
+    },
+    "/v1/features/{symbol}": {
+      "get": {
+        "tags": ["Point-in-time features"],
+        "operationId": "getPointInTimeFeatureVector",
+        "summary": "Read the latest feature values available at a UTC cutoff",
+        "description": "Returns one latest value per feature whose asof_utc is less than or equal to the requested cutoff. Missing vectors are represented as null; missing facts are not estimated.",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "features:read",
+        "parameters": [
+          {"$ref": "#/components/parameters/SymbolPath"},
+          {"$ref": "#/components/parameters/AsofUtc"}
+        ],
+        "responses": {
+          "200": {
+            "description": "Point-in-time vector, or null when no feature exists at or before asof.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/FeatureVectorResponse"},
+                "example": {
+                  "api_version": "v1",
+                  "feature_vector": {
+                    "symbol": "AAPL",
+                    "asof_utc": "2026-07-22T15:31:00Z",
+                    "input_event_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    "features": [
+                      {
+                        "name": "minute_return",
+                        "value": 0.0042,
+                        "asof_utc": "2026-07-22T15:31:00Z",
+                        "definition_version": "sip.minute.v1",
+                        "provenance": "alpaca.sip.websocket@2026-07-22T15:31:00+00:00|feature:minute_return@sip.minute.v1"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"}
+        }
+      }
+    },
+    "/v1/market-data/events": {
+      "get": {
+        "tags": ["Normalized market data"],
+        "operationId": "pollNormalizedSipEvents",
+        "summary": "Poll normalized SIP bars and quotes by monotonic sequence",
+        "description": "Designed for the AI ingestion process. after is exclusive. next_sequence equals the last returned sequence, or the supplied after value when no event is available.",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "market-data:read",
+        "parameters": [
+          {"$ref": "#/components/parameters/SymbolsQuery"},
+          {"$ref": "#/components/parameters/AfterSequence"},
+          {"$ref": "#/components/parameters/EventLimit"}
+        ],
+        "responses": {
+          "200": {
+            "description": "Normalized events in ascending sequence order.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/MarketEventsResponse"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/v1/market-data/bars": {
+      "get": {
+        "tags": ["Normalized market data"],
+        "operationId": "listHistoricalMinuteBars",
+        "summary": "Read split-adjusted one-minute SIP bars",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "market-data:read",
+        "parameters": [
+          {"$ref": "#/components/parameters/SymbolsQuery"},
+          {"$ref": "#/components/parameters/StartUtc"},
+          {"$ref": "#/components/parameters/EndUtc"}
+        ],
+        "responses": {
+          "200": {
+            "description": "All provider pages flattened to normalized rows.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BarsResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "502": {"$ref": "#/components/responses/UpstreamFailed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/v1/market-data/quotes": {
+      "get": {
+        "tags": ["Normalized market data"],
+        "operationId": "listHistoricalSipQuotes",
+        "summary": "Read historical SIP quotes",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "market-data:read",
+        "parameters": [
+          {"$ref": "#/components/parameters/SymbolsQuery"},
+          {"$ref": "#/components/parameters/StartUtc"},
+          {"$ref": "#/components/parameters/EndUtc"}
+        ],
+        "responses": {
+          "200": {
+            "description": "All provider pages flattened to normalized rows.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QuotesResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "502": {"$ref": "#/components/responses/UpstreamFailed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/v1/market-data/news": {
+      "get": {
+        "tags": ["Normalized market data"],
+        "operationId": "listMarketNews",
+        "summary": "Read market news metadata for a UTC interval",
+        "description": "The current adapter requests metadata without full article content. The provider object is returned with known fields documented and additional fields preserved.",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "market-data:read",
+        "parameters": [
+          {"$ref": "#/components/parameters/StartUtc"},
+          {"$ref": "#/components/parameters/EndUtc"}
+        ],
+        "responses": {
+          "200": {
+            "description": "All provider pages in ascending order.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NewsResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "502": {"$ref": "#/components/responses/UpstreamFailed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/v1/paper/account": {
+      "get": {
+        "tags": ["Guarded Paper trading"],
+        "operationId": "getPaperAccount",
+        "summary": "Read the cloud-owned Alpaca Paper account summary",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "paper:read",
+        "responses": {
+          "200": {
+            "description": "Paper account state. Monetary values remain decimal strings.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaperAccountResponse"}}}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "502": {"$ref": "#/components/responses/UpstreamFailed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/v1/paper/positions": {
+      "get": {
+        "tags": ["Guarded Paper trading"],
+        "operationId": "listPaperPositions",
+        "summary": "List current Paper positions",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "paper:read",
+        "responses": {
+          "200": {
+            "description": "Current Paper positions.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaperPositionsResponse"}}}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "502": {"$ref": "#/components/responses/UpstreamFailed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/v1/paper/orders/open": {
+      "get": {
+        "tags": ["Guarded Paper trading"],
+        "operationId": "listOpenPaperOrders",
+        "summary": "List up to 500 open Paper orders",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "paper:read",
+        "responses": {
+          "200": {
+            "description": "Open Paper orders normalized to the documented six-field response model. Broker-specific nested child fields are not exposed.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaperOrdersResponse"}}}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "502": {"$ref": "#/components/responses/UpstreamFailed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/v1/paper/orders/by-client-id": {
+      "get": {
+        "tags": ["Guarded Paper trading"],
+        "operationId": "getPaperOrderByClientId",
+        "summary": "Look up a Paper order by idempotent client order id",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "paper:read",
+        "parameters": [{"$ref": "#/components/parameters/ClientOrderId"}],
+        "responses": {
+          "200": {
+            "description": "Order object, or null when no order has that client_order_id.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PaperOrderResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "502": {"$ref": "#/components/responses/UpstreamFailed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/v1/paper/orders": {
+      "post": {
+        "tags": ["Guarded Paper trading"],
+        "operationId": "submitPaperOrder",
+        "summary": "Submit an idempotent long-only Paper entry or close order",
+        "description": "Requires paper:write and the server-side PAPER_BROKER_WRITE_ENABLED gate. Entry is buy-only and always bracketed with take-profit and stop-loss. Close is sell-only and market/day. Live and short orders are impossible through this schema.",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "paper:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/PaperOrderEnvelope"},
+              "examples": {
+                "entryMarket": {
+                  "summary": "Long entry with bracket exits",
+                  "value": {
+                    "kind": "entry",
+                    "request": {
+                      "client_order_id": "gap_momentum_a-20260722-AAPL-entry-1",
+                      "symbol": "AAPL",
+                      "qty": 2,
+                      "side": "buy",
+                      "order_type": "market",
+                      "time_in_force": "day",
+                      "extended_hours": false,
+                      "limit_price": null,
+                      "take_profit_price": "230.50",
+                      "stop_loss_price": "218.00"
+                    }
+                  }
+                },
+                "close": {
+                  "summary": "Long position close",
+                  "value": {
+                    "kind": "close",
+                    "request": {
+                      "client_order_id": "gap_momentum_a-20260722-AAPL-close-1",
+                      "symbol": "AAPL",
+                      "qty": 2,
+                      "side": "sell",
+                      "order_type": "market",
+                      "time_in_force": "day",
+                      "extended_hours": false
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New order, or the existing broker order when client_order_id was already submitted.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RequiredPaperOrderResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/WritesDisabled"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "502": {"$ref": "#/components/responses/UpstreamFailed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/v1/paper/orders/cancel/{order_id}": {
+      "delete": {
+        "tags": ["Guarded Paper trading"],
+        "operationId": "cancelPaperOrder",
+        "summary": "Cancel a Paper order",
+        "description": "Requires paper:write and the server-side write gate. Returns cancelled=false when the broker reports that the order does not exist.",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "paper:write",
+        "parameters": [{"$ref": "#/components/parameters/OrderId"}],
+        "responses": {
+          "200": {
+            "description": "Cancellation result.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/CancelPaperOrderResponse"},
+                "example": {"api_version": "v1", "cancelled": true}
+              }
+            }
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/WritesDisabled"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "502": {"$ref": "#/components/responses/UpstreamFailed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque random token",
+        "description": "Opaque service token. The server stores only its SHA-256 digest. Required scope is declared by each operation's x-required-scope extension."
+      }
+    },
+    "headers": {
+      "CacheControl": {
+        "description": "Every response is non-cacheable because it may contain strategy, market, or account state.",
+        "schema": {"type": "string", "const": "no-store"}
+      }
+    },
+    "parameters": {
+      "StrategyId": {
+        "name": "strategy_id",
+        "in": "path",
+        "required": true,
+        "description": "Lowercase stable strategy identity. Signal tokens are bound to one exact strategy_id.",
+        "schema": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+        "example": "gap_momentum_a"
+      },
+      "SymbolPath": {
+        "name": "symbol",
+        "in": "path",
+        "required": true,
+        "schema": {"$ref": "#/components/schemas/Symbol"},
+        "example": "AAPL"
+      },
+      "AsofUtc": {
+        "name": "asof",
+        "in": "query",
+        "required": true,
+        "description": "Inclusive point-in-time cutoff. Must be timezone-aware UTC; offsets other than +00:00 are rejected.",
+        "schema": {"type": "string", "format": "date-time"},
+        "example": "2026-07-22T15:31:00Z"
+      },
+      "SinceUtc": {
+        "name": "since",
+        "in": "query",
+        "required": false,
+        "description": "Inclusive UTC lower bound. When omitted, all stored signals for the strategy are returned.",
+        "schema": {"type": "string", "format": "date-time"},
+        "example": "2026-07-22T14:30:00Z"
+      },
+      "StartUtc": {
+        "name": "start",
+        "in": "query",
+        "required": true,
+        "description": "Inclusive interval start. Must be timezone-aware UTC.",
+        "schema": {"type": "string", "format": "date-time"},
+        "example": "2026-07-22T14:30:00Z"
+      },
+      "EndUtc": {
+        "name": "end",
+        "in": "query",
+        "required": true,
+        "description": "Interval end forwarded to the SIP historical provider. Must be timezone-aware UTC and later than start.",
+        "schema": {"type": "string", "format": "date-time"},
+        "example": "2026-07-22T20:00:00Z"
+      },
+      "SymbolsQuery": {
+        "name": "symbols",
+        "in": "query",
+        "required": true,
+        "description": "Comma-separated symbols. Values are stripped, uppercased, deduplicated, and sorted.",
+        "schema": {"type": "string", "minLength": 1},
+        "example": "AAPL,MSFT"
+      },
+      "AfterSequence": {
+        "name": "after",
+        "in": "query",
+        "required": false,
+        "description": "Exclusive raw event sequence cursor.",
+        "schema": {"type": "integer", "minimum": 0, "default": 0}
+      },
+      "EventLimit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 1000}
+      },
+      "ClientOrderId": {
+        "name": "client_order_id",
+        "in": "query",
+        "required": true,
+        "description": "Caller-generated stable idempotency key used for broker reconciliation.",
+        "schema": {"type": "string", "minLength": 1, "maxLength": 128},
+        "example": "gap_momentum_a-20260722-AAPL-entry-1"
+      },
+      "OrderId": {
+        "name": "order_id",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "minLength": 1}
+      }
+    },
+    "responses": {
+      "InvalidRequest": {
+        "description": "A parameter, timestamp, body, model field, interval, or JSON payload is invalid.",
+        "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}, "example": {"error": "invalid_request"}}}
+      },
+      "Unauthorized": {
+        "description": "Bearer token is absent, unknown, wrong-scope, or bound to a different strategy.",
+        "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}, "example": {"error": "unauthorized"}}}
+      },
+      "WritesDisabled": {
+        "description": "Paper write scope is valid, but the independent server-side write gate is disabled.",
+        "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}, "example": {"error": "writes_disabled"}}}
+      },
+      "NotFound": {
+        "description": "Route does not exist. This includes prohibited generic proxy, Alpaca, Live, and short-order routes.",
+        "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}, "example": {"error": "not_found"}}}
+      },
+      "MethodNotAllowed": {
+        "description": "HTTP method is not GET, POST, or DELETE.",
+        "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}, "example": {"error": "method_not_allowed"}}}
+      },
+      "UpstreamFailed": {
+        "description": "The cloud-owned Alpaca adapter failed or returned an invalid response. Provider details and credentials are not forwarded.",
+        "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}, "example": {"error": "upstream_failed"}}}
+      },
+      "Unavailable": {
+        "description": "The required raw store, market adapter, or Paper adapter is not configured on this server.",
+        "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}, "example": {"error": "unavailable"}}}
+      }
+    },
+    "schemas": {
+      "ApiVersion": {"type": "string", "const": "v1"},
+      "Symbol": {"type": "string", "pattern": "^[A-Z][A-Z0-9.-]*$"},
+      "UtcTimestamp": {"type": "string", "format": "date-time", "description": "Timezone-aware UTC. The implementation rejects non-zero offsets."},
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": ["invalid_request", "unauthorized", "writes_disabled", "not_found", "method_not_allowed", "upstream_failed", "unavailable"]
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "status"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "status": {"type": "string", "const": "ready"}
+        }
+      },
+      "DerivedSignal": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["signal_id", "strategy_id", "strategy_version", "symbol", "asof_utc", "action", "reason", "feature_provenance"],
+        "properties": {
+          "signal_id": {"type": "string", "minLength": 1},
+          "strategy_id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+          "strategy_version": {"type": "string", "minLength": 1},
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "asof_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "action": {"type": "string", "enum": ["watch", "enter_long", "exit_long"]},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 512},
+          "feature_provenance": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+        }
+      },
+      "SignalsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "principal_id", "signals"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "principal_id": {"type": "string", "minLength": 1},
+          "signals": {"type": "array", "items": {"$ref": "#/components/schemas/DerivedSignal"}}
+        }
+      },
+      "FeatureScalar": {
+        "oneOf": [
+          {"type": "boolean"},
+          {"type": "integer"},
+          {"type": "number"},
+          {"type": "string"},
+          {"type": "null"}
+        ]
+      },
+      "FeatureValue": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "value", "asof_utc", "definition_version", "provenance"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 128},
+          "value": {"$ref": "#/components/schemas/FeatureScalar"},
+          "asof_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "definition_version": {"type": "string", "minLength": 1, "maxLength": 64},
+          "provenance": {"type": "string", "minLength": 1}
+        }
+      },
+      "FeatureVector": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "asof_utc", "input_event_id", "features"],
+        "properties": {
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "asof_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "input_event_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "features": {"type": "array", "minItems": 1, "items": {"$ref": "#/components/schemas/FeatureValue"}}
+        }
+      },
+      "FeatureVectorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "feature_vector"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "feature_vector": {"oneOf": [{"$ref": "#/components/schemas/FeatureVector"}, {"type": "null"}]}
+        }
+      },
+      "SipQuote": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event_type", "symbol", "ts_utc", "bid_price", "bid_size", "ask_price", "ask_size", "feed", "provenance"],
+        "properties": {
+          "event_type": {"type": "string", "const": "quote"},
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "ts_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "bid_price": {"type": "number", "minimum": 0},
+          "bid_size": {"type": "integer", "minimum": 0},
+          "ask_price": {"type": "number", "minimum": 0},
+          "ask_size": {"type": "integer", "minimum": 0},
+          "feed": {"type": "string", "const": "sip"},
+          "provenance": {"type": "string", "minLength": 1}
+        }
+      },
+      "SipBar": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event_type", "symbol", "ts_utc", "open", "high", "low", "close", "volume", "trade_count", "vwap", "feed", "provenance"],
+        "properties": {
+          "event_type": {"type": "string", "const": "bar"},
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "ts_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "open": {"type": "number", "exclusiveMinimum": 0},
+          "high": {"type": "number", "exclusiveMinimum": 0},
+          "low": {"type": "number", "exclusiveMinimum": 0},
+          "close": {"type": "number", "exclusiveMinimum": 0},
+          "volume": {"type": "integer", "minimum": 0},
+          "trade_count": {"type": "integer", "minimum": 0},
+          "vwap": {"type": "number", "exclusiveMinimum": 0},
+          "feed": {"type": "string", "const": "sip"},
+          "provenance": {"type": "string", "minLength": 1}
+        }
+      },
+      "SequencedMarketEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "event"],
+        "properties": {
+          "sequence": {"type": "integer", "minimum": 1},
+          "event": {"oneOf": [{"$ref": "#/components/schemas/SipBar"}, {"$ref": "#/components/schemas/SipQuote"}], "discriminator": {"propertyName": "event_type"}}
+        }
+      },
+      "MarketEventsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "events", "next_sequence"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "events": {"type": "array", "items": {"$ref": "#/components/schemas/SequencedMarketEvent"}},
+          "next_sequence": {"type": "integer", "minimum": 0}
+        }
+      },
+      "HistoricalBar": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "ts_utc", "open", "high", "low", "close", "volume", "trade_count", "vwap", "source", "feed", "adjustment"],
+        "properties": {
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "ts_utc": {"type": ["string", "null"], "format": "date-time"},
+          "open": {"type": ["number", "null"]},
+          "high": {"type": ["number", "null"]},
+          "low": {"type": ["number", "null"]},
+          "close": {"type": ["number", "null"]},
+          "volume": {"type": ["integer", "null"], "minimum": 0},
+          "trade_count": {"type": ["integer", "null"], "minimum": 0},
+          "vwap": {"type": ["number", "null"]},
+          "source": {"type": "string", "const": "cloud.alpaca.market_data"},
+          "feed": {"type": "string", "const": "sip"},
+          "adjustment": {"type": "string", "const": "split_adjusted"}
+        }
+      },
+      "BarsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "bars"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "bars": {"type": "array", "items": {"$ref": "#/components/schemas/HistoricalBar"}}
+        }
+      },
+      "HistoricalQuote": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "ts_utc", "bid_price", "ask_price", "bid_size", "ask_size", "bid_exchange", "ask_exchange", "conditions", "tape", "source", "feed"],
+        "properties": {
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "ts_utc": {"type": ["string", "null"], "format": "date-time"},
+          "bid_price": {"type": ["number", "null"]},
+          "ask_price": {"type": ["number", "null"]},
+          "bid_size": {"type": ["integer", "null"], "minimum": 0},
+          "ask_size": {"type": ["integer", "null"], "minimum": 0},
+          "bid_exchange": {"type": ["string", "null"]},
+          "ask_exchange": {"type": ["string", "null"]},
+          "conditions": {"type": "array", "items": {}},
+          "tape": {"type": ["string", "null"]},
+          "source": {"type": "string", "const": "cloud.alpaca.market_data"},
+          "feed": {"type": "string", "const": "sip"}
+        }
+      },
+      "QuotesResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "quotes"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "quotes": {"type": "array", "items": {"$ref": "#/components/schemas/HistoricalQuote"}}
+        }
+      },
+      "NewsArticle": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Known provider news metadata. Full article content is not requested. Additional provider metadata is preserved.",
+        "properties": {
+          "id": {"oneOf": [{"type": "integer"}, {"type": "string"}]},
+          "headline": {"type": "string"},
+          "summary": {"type": "string"},
+          "author": {"type": "string"},
+          "created_at": {"type": "string", "format": "date-time"},
+          "updated_at": {"type": "string", "format": "date-time"},
+          "url": {"type": "string", "format": "uri"},
+          "symbols": {"type": "array", "items": {"$ref": "#/components/schemas/Symbol"}},
+          "source": {"type": "string"}
+        }
+      },
+      "NewsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "news"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "news": {"type": "array", "items": {"$ref": "#/components/schemas/NewsArticle"}}
+        }
+      },
+      "PaperAccount": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "account_blocked", "trading_blocked", "equity", "last_equity", "buying_power"],
+        "properties": {
+          "status": {"type": "string"},
+          "account_blocked": {"type": "boolean"},
+          "trading_blocked": {"type": "boolean"},
+          "equity": {"type": "string", "description": "Decimal monetary string."},
+          "last_equity": {"type": "string", "description": "Decimal monetary string."},
+          "buying_power": {"type": "string", "description": "Decimal monetary string."}
+        }
+      },
+      "PaperAccountResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "account"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "account": {"$ref": "#/components/schemas/PaperAccount"}
+        }
+      },
+      "PaperPosition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "qty", "side", "market_value"],
+        "properties": {
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "qty": {"type": "string", "description": "Broker decimal quantity string."},
+          "side": {"type": "string"},
+          "market_value": {"type": "string", "description": "Broker decimal monetary string."}
+        }
+      },
+      "PaperPositionsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "positions"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "positions": {"type": "array", "items": {"$ref": "#/components/schemas/PaperPosition"}}
+        }
+      },
+      "BrokerOrder": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "client_order_id", "symbol", "qty", "filled_qty", "status"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "client_order_id": {"type": "string", "minLength": 1},
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "qty": {"type": "integer", "minimum": 1},
+          "filled_qty": {"type": "string"},
+          "status": {"type": "string"}
+        }
+      },
+      "PaperOrdersResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "orders"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "orders": {"type": "array", "items": {"$ref": "#/components/schemas/BrokerOrder"}}
+        }
+      },
+      "PaperOrderResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "order"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "order": {"oneOf": [{"$ref": "#/components/schemas/BrokerOrder"}, {"type": "null"}]}
+        }
+      },
+      "RequiredPaperOrderResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "order"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "order": {"$ref": "#/components/schemas/BrokerOrder"}
+        }
+      },
+      "PaperEntryOrderRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["client_order_id", "symbol", "qty", "take_profit_price", "stop_loss_price"],
+        "properties": {
+          "client_order_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "qty": {"type": "integer", "minimum": 1},
+          "side": {"type": "string", "const": "buy", "default": "buy"},
+          "order_type": {"type": "string", "enum": ["market", "limit"], "default": "market"},
+          "time_in_force": {"type": "string", "const": "day", "default": "day"},
+          "extended_hours": {"type": "boolean", "const": false, "default": false},
+          "limit_price": {"type": ["string", "null"], "description": "Required and non-null for limit orders; omit it or use null for market orders."},
+          "take_profit_price": {"type": "string", "minLength": 1},
+          "stop_loss_price": {"type": "string", "minLength": 1}
+        }
+      },
+      "PaperCloseOrderRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["client_order_id", "symbol", "qty"],
+        "properties": {
+          "client_order_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "qty": {"type": "integer", "minimum": 1},
+          "side": {"type": "string", "const": "sell", "default": "sell"},
+          "order_type": {"type": "string", "const": "market", "default": "market"},
+          "time_in_force": {"type": "string", "const": "day", "default": "day"},
+          "extended_hours": {"type": "boolean", "const": false, "default": false}
+        }
+      },
+      "PaperEntryOrderEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "request"],
+        "properties": {
+          "kind": {"type": "string", "const": "entry"},
+          "request": {"$ref": "#/components/schemas/PaperEntryOrderRequest"}
+        }
+      },
+      "PaperCloseOrderEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "request"],
+        "properties": {
+          "kind": {"type": "string", "const": "close"},
+          "request": {"$ref": "#/components/schemas/PaperCloseOrderRequest"}
+        }
+      },
+      "PaperOrderEnvelope": {
+        "oneOf": [
+          {"$ref": "#/components/schemas/PaperEntryOrderEnvelope"},
+          {"$ref": "#/components/schemas/PaperCloseOrderEnvelope"}
+        ],
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "entry": "#/components/schemas/PaperEntryOrderEnvelope",
+            "close": "#/components/schemas/PaperCloseOrderEnvelope"
+          }
+        }
+      },
+      "CancelPaperOrderResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "cancelled"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "cancelled": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}
