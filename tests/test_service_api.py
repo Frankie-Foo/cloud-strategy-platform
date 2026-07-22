@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from cloud_strategy_platform.alpaca_paper import (
@@ -153,6 +153,56 @@ def test_market_data_token_reads_events_and_history_but_cannot_trade(tmp_path: P
         method="GET", target="/v1/paper/account", headers=headers
     )
     assert denied.status == 401
+
+
+def test_market_data_write_token_leases_symbols_and_read_token_cannot(
+    tmp_path: Path,
+) -> None:
+    application, registry, _ = _application(tmp_path)
+    write_token = registry.issue_token(
+        principal_id="ai-quant-market", scope=AccessScope.MARKET_DATA_WRITE
+    )
+    read_token = registry.issue_token(
+        principal_id="read-only", scope=AccessScope.MARKET_DATA_READ
+    )
+    body: dict[str, object] = {
+        "symbols": ["msft", "AAPL", "MSFT"],
+        "replay_from_utc": (NOW - timedelta(minutes=1)).isoformat(),
+        "expires_at_utc": (NOW + timedelta(hours=1)).isoformat(),
+    }
+
+    denied = application.handle(
+        method="POST",
+        target="/v1/market-data/subscriptions",
+        headers={"authorization": f"Bearer {read_token}"},
+        body=body,
+    )
+    assert denied.status == 401
+
+    accepted = application.handle(
+        method="POST",
+        target="/v1/market-data/subscriptions",
+        headers={"authorization": f"Bearer {write_token}"},
+        body=body,
+    )
+    assert accepted.status == 200
+    assert accepted.body["symbols"] == ["AAPL", "MSFT"]
+    assert accepted.body["start_after_sequence"] == 0
+    assert registry.active_market_symbols(at_utc=NOW) == ("AAPL", "MSFT")
+
+
+def test_market_data_subscription_expiry_fails_closed(tmp_path: Path) -> None:
+    registry = StrategyRegistry(tmp_path / "registry.sqlite3")
+    registry.set_market_subscription(
+        principal_id="ai-quant-market",
+        symbols=("AAPL",),
+        expires_at_utc=NOW + timedelta(minutes=1),
+        updated_at_utc=NOW,
+    )
+    assert registry.active_market_symbols(at_utc=NOW) == ("AAPL",)
+    assert registry.active_market_symbols(
+        at_utc=NOW + timedelta(minutes=1)
+    ) == ()
 
 
 def test_paper_write_token_reads_account_and_submits_but_signal_token_cannot(

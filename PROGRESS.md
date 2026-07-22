@@ -77,3 +77,22 @@ Status: implemented; GitHub CI execution is pending the branch push.
 - Added least-privilege GitHub Actions verification for pytest, Ruff, and strict mypy.
 - Added a security reporting policy that prohibits public disclosure of credentials,
   account data, runtime databases, orders, and proprietary market-data samples.
+
+## C5 lease-driven realtime SIP runtime - 2026-07-22
+
+Status: implemented, locally deployed, and verified with live SIP events; the API remains
+loopback-only and production internet deployment still requires TLS and service supervision.
+
+- Added a bounded `market-data:write` subscription lease. The AI client declares its
+  current locked symbols and receives a replay cursor before reading normalized events.
+- The single SIP owner now waits safely with no lease, retains one connection while the
+  leased symbol union is unchanged, and reconnects only when that union changes.
+- Preserved every minute bar and sampled quote traffic to one observation per symbol per
+  UTC second so a high-rate symbol cannot starve the event loop or bar ingestion.
+- Added restart loops to the local API and SIP-owner runners, duplicate-process checks to
+  the installer, and automatic revocation of old service tokens during credential rotation.
+- Live acceptance consumed 1,067 events in a bounded AI session, then sustained the
+  continuous session across multiple poll intervals; eight selected symbols each produced
+  a minute bar, local quote timestamps continued advancing, and no order was submitted.
+- Repository acceptance: 21 tests passed, Ruff clean, and strict mypy success across
+  26 source files.

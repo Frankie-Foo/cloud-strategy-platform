@@ -79,7 +79,7 @@ def main() -> int:
 
     registry = StrategyRegistry(args.registry_db)
     market_token = registry.issue_token(
-        principal_id="ai-investment-market", scope=AccessScope.MARKET_DATA_READ
+        principal_id="ai-investment-market", scope=AccessScope.MARKET_DATA_WRITE
     )
     paper_token = registry.issue_token(
         principal_id="ai-investment-paper", scope=AccessScope.PAPER_WRITE
@@ -87,6 +87,15 @@ def main() -> int:
     feature_token = registry.issue_token(
         principal_id="ai-investment-features", scope=AccessScope.FEATURES_READ
     )
+    for principal_id, active_token in (
+        ("ai-investment-market", market_token),
+        ("ai-investment-paper", paper_token),
+        ("ai-investment-features", feature_token),
+    ):
+        registry.revoke_other_tokens(
+            principal_id=principal_id,
+            active_token=active_token,
+        )
     _atomic(
         args.cloud_env,
         _updated(

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from cloud_strategy_platform.contracts import AccessScope
-from cloud_strategy_platform.registry import StrategyRegistry
+from cloud_strategy_platform.registry import AuthorizationError, StrategyRegistry
 from scripts import migrate_ai_credentials
 
 
@@ -53,7 +53,18 @@ def test_migration_moves_provider_keys_and_issues_scoped_tokens(
     assert cloud["ALPACA_API_SECRET_KEY"] == "provider-secret"
     registry = StrategyRegistry(registry_db)
     registry.authorize(
-        ai["CLOUD_MARKET_DATA_API_TOKEN"], scope=AccessScope.MARKET_DATA_READ
+        ai["CLOUD_MARKET_DATA_API_TOKEN"], scope=AccessScope.MARKET_DATA_WRITE
     )
+    registry.authorize(ai["CLOUD_MARKET_DATA_API_TOKEN"], scope=AccessScope.MARKET_DATA_READ)
     registry.authorize(ai["CLOUD_PAPER_API_TOKEN"], scope=AccessScope.PAPER_READ)
     registry.authorize(ai["CLOUD_FEATURE_API_TOKEN"], scope=AccessScope.FEATURES_READ)
+
+    first_market_token = ai["CLOUD_MARKET_DATA_API_TOKEN"]
+    assert migrate_ai_credentials.main() == 0
+    rotated = _env(ai_env)
+    assert rotated["CLOUD_MARKET_DATA_API_TOKEN"] != first_market_token
+    with pytest.raises(AuthorizationError):
+        registry.authorize(first_market_token, scope=AccessScope.MARKET_DATA_READ)
+    registry.authorize(
+        rotated["CLOUD_MARKET_DATA_API_TOKEN"], scope=AccessScope.MARKET_DATA_WRITE
+    )

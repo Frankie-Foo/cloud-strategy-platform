@@ -17,6 +17,7 @@ EXPECTED_SCOPES = {
     ("GET", "/v1/market-data/bars"): "market-data:read",
     ("GET", "/v1/market-data/quotes"): "market-data:read",
     ("GET", "/v1/market-data/news"): "market-data:read",
+    ("POST", "/v1/market-data/subscriptions"): "market-data:write",
     ("GET", "/v1/paper/account"): "paper:read",
     ("GET", "/v1/paper/positions"): "paper:read",
     ("GET", "/v1/paper/orders/open"): "paper:read",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 from datetime import UTC, date, datetime
@@ -16,6 +17,7 @@ from cloud_strategy_platform.contracts import (
     SignalAction,
     StrategyArtifact,
     StrategyDefinition,
+    require_utc,
     validate_strategy_id,
 )
 from cloud_strategy_platform.expressions import SafeExpression
@@ -68,6 +70,14 @@ class StrategyRegistry:
                     created_at_utc TEXT NOT NULL,
                     revoked_at_utc TEXT
                 );
+                CREATE TABLE IF NOT EXISTS market_data_subscriptions (
+                    principal_id TEXT PRIMARY KEY,
+                    symbols_json TEXT NOT NULL,
+                    updated_at_utc TEXT NOT NULL,
+                    expires_at_utc TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ix_market_data_subscription_expiry
+                    ON market_data_subscriptions(expires_at_utc);
                 """
             )
 
@@ -131,6 +141,66 @@ class StrategyRegistry:
                 (strategy_id,),
             ).fetchone()
         return None if row is None else StrategyDefinition.model_validate_json(str(row[0]))
+
+    def set_market_subscription(
+        self,
+        *,
+        principal_id: str,
+        symbols: tuple[str, ...],
+        expires_at_utc: datetime,
+        updated_at_utc: datetime,
+    ) -> tuple[str, ...]:
+        require_utc(updated_at_utc)
+        require_utc(expires_at_utc)
+        if not principal_id.strip() or expires_at_utc <= updated_at_utc:
+            raise ValueError("market-data subscription lease is invalid")
+        normalized = tuple(sorted({symbol.strip().upper() for symbol in symbols}))
+        if not normalized or len(normalized) > 500 or any(
+            re.fullmatch(r"[A-Z][A-Z0-9.-]{0,15}", symbol) is None
+            for symbol in normalized
+        ):
+            raise ValueError("market-data subscription symbols are invalid")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO market_data_subscriptions (
+                    principal_id, symbols_json, updated_at_utc, expires_at_utc
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(principal_id) DO UPDATE SET
+                    symbols_json=excluded.symbols_json,
+                    updated_at_utc=excluded.updated_at_utc,
+                    expires_at_utc=excluded.expires_at_utc
+                """,
+                (
+                    principal_id.strip(),
+                    json.dumps(normalized, separators=(",", ":")),
+                    updated_at_utc.isoformat(),
+                    expires_at_utc.isoformat(),
+                ),
+            )
+        return normalized
+
+    def active_market_symbols(self, *, at_utc: datetime) -> tuple[str, ...]:
+        require_utc(at_utc)
+        symbols = {
+            symbol
+            for definition in self.active_strategies()
+            for symbol in definition.symbols
+        }
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT symbols_json FROM market_data_subscriptions
+                WHERE expires_at_utc>?
+                """,
+                (at_utc.isoformat(),),
+            ).fetchall()
+        for row in rows:
+            value = json.loads(str(row[0]))
+            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                raise ValueError("stored market-data subscription is invalid")
+            symbols.update(value)
+        return tuple(sorted(symbols))
 
     def record_artifact(self, artifact: StrategyArtifact) -> StrategyArtifact:
         serialized = artifact.model_dump_json()
@@ -307,6 +377,9 @@ class StrategyRegistry:
         granted_scope = AccessScope(str(row["scope"]))
         allowed = granted_scope is scope or (
             granted_scope is AccessScope.PAPER_WRITE and scope is AccessScope.PAPER_READ
+        ) or (
+            granted_scope is AccessScope.MARKET_DATA_WRITE
+            and scope is AccessScope.MARKET_DATA_READ
         )
         if not allowed:
             raise AuthorizationError("token scope is not authorized")
@@ -314,3 +387,24 @@ class StrategyRegistry:
         if scope is AccessScope.SIGNALS_READ and granted_strategy != strategy_id:
             raise AuthorizationError("token is not authorized for this strategy")
         return str(row["principal_id"])
+
+    def revoke_other_tokens(
+        self,
+        *,
+        principal_id: str,
+        active_token: str,
+        revoked_at_utc: datetime | None = None,
+    ) -> int:
+        if not principal_id.strip() or not active_token.strip():
+            raise ValueError("principal_id and active_token are required")
+        revoked_at = datetime.now(UTC) if revoked_at_utc is None else require_utc(revoked_at_utc)
+        active_digest = hashlib.sha256(active_token.encode()).hexdigest()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE api_tokens SET revoked_at_utc=?
+                WHERE principal_id=? AND token_sha256<>? AND revoked_at_utc IS NULL
+                """,
+                (revoked_at.isoformat(), principal_id, active_digest),
+            )
+        return cursor.rowcount

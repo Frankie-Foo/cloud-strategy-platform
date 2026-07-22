@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Protocol
@@ -20,7 +20,11 @@ from cloud_strategy_platform.alpaca_paper import (
     PaperOrderRequest,
     PaperPosition,
 )
-from cloud_strategy_platform.contracts import API_VERSION, AccessScope
+from cloud_strategy_platform.contracts import (
+    API_VERSION,
+    AccessScope,
+    MarketDataSubscriptionRequest,
+)
 from cloud_strategy_platform.feature_store import RawSipEventStore, SharedFeatureStore
 from cloud_strategy_platform.registry import AuthorizationError, StrategyRegistry
 
@@ -152,6 +156,35 @@ class ApiApplication:
                     },
                 )
             if len(parts) == 3 and parts[:2] == (API_VERSION, "market-data"):
+                if parts[2] == "subscriptions" and method == "POST":
+                    principal = self.registry.authorize(
+                        token, scope=AccessScope.MARKET_DATA_WRITE
+                    )
+                    if self.raw_store is None:
+                        return ApiResponse(
+                            HTTPStatus.SERVICE_UNAVAILABLE, {"error": "unavailable"}
+                        )
+                    request = MarketDataSubscriptionRequest.model_validate(body or {})
+                    updated_at = datetime.now(UTC)
+                    if request.expires_at_utc <= updated_at:
+                        raise ValueError("subscription already expired")
+                    symbols = self.registry.set_market_subscription(
+                        principal_id=principal,
+                        symbols=request.symbols,
+                        expires_at_utc=request.expires_at_utc,
+                        updated_at_utc=updated_at,
+                    )
+                    return ApiResponse(
+                        HTTPStatus.OK,
+                        {
+                            "api_version": API_VERSION,
+                            "symbols": list(symbols),
+                            "expires_at_utc": request.expires_at_utc.isoformat(),
+                            "start_after_sequence": self.raw_store.sequence_before(
+                                request.replay_from_utc
+                            ),
+                        },
+                    )
                 self.registry.authorize(token, scope=AccessScope.MARKET_DATA_READ)
                 if parts[2] == "news" and method == "GET":
                     if self.market_data is None:
