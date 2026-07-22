@@ -52,6 +52,9 @@ class SignalAction(StrEnum):
 class AccessScope(StrEnum):
     SIGNALS_READ = "signals:read"
     FEATURES_READ = "features:read"
+    MARKET_DATA_READ = "market-data:read"
+    PAPER_READ = "paper:read"
+    PAPER_WRITE = "paper:write"
 
 
 class StrategyDefinition(FrozenModel):

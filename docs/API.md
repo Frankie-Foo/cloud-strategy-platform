@@ -5,6 +5,9 @@
 | Scope | Intended principal | Accessible route |
 |---|---|---|
 | `features:read` | AI investment service | `GET /v1/features/{symbol}` |
+| `market-data:read` | AI market ingestion | `GET /v1/market-data/*` |
+| `paper:read` | AI reconciliation | `GET /v1/paper/*` |
+| `paper:write` | AI guarded execution | Paper reads plus `POST/DELETE /v1/paper/orders*` |
 | `signals:read` | collaborator | `GET /v1/strategies/{strategy_id}/signals` |
 
 Tokens are random bearer secrets. Only SHA-256 digests are stored. A signal token is
@@ -44,5 +47,7 @@ URL, Broker state, or order function is returned.
 
 ## Deliberately nonexistent routes
 
-`/raw`, `/proxy`, `/alpaca`, `/accounts`, `/positions`, `/tradeplans`, `/orders`, and
-all write methods are outside this service contract and return 404/405.
+`/proxy`, `/alpaca`, Live Broker routes, credential inspection, arbitrary URLs, and
+short-order contracts are outside this service contract and return 404/405. Normalized
+market events and Paper routes require their exact service scopes; collaborator tokens
+receive 401.
