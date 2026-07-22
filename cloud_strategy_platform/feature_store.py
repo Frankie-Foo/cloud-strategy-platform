@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from cloud_strategy_platform.contracts import FeatureValue, FeatureVector, require_utc
-from cloud_strategy_platform.market_data import SipBar, SipEvent
+from cloud_strategy_platform.market_data import SipBar, SipEvent, SipQuote
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -28,8 +28,9 @@ class RawSipEventStore:
         with _connect(self.path) as connection:
             connection.execute(
                 """
-                CREATE TABLE IF NOT EXISTS raw_sip_events (
-                    event_id TEXT PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS raw_sip_event_log (
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
                     symbol TEXT NOT NULL,
                     event_type TEXT NOT NULL,
                     ts_utc TEXT NOT NULL,
@@ -45,7 +46,7 @@ class RawSipEventStore:
         with _connect(self.path) as connection:
             connection.execute(
                 """
-                INSERT OR IGNORE INTO raw_sip_events (
+                INSERT OR IGNORE INTO raw_sip_event_log (
                     event_id, symbol, event_type, ts_utc, event_json, provenance
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
@@ -62,7 +63,37 @@ class RawSipEventStore:
 
     def count(self) -> int:
         with _connect(self.path) as connection:
-            return int(connection.execute("SELECT COUNT(*) FROM raw_sip_events").fetchone()[0])
+            return int(
+                connection.execute("SELECT COUNT(*) FROM raw_sip_event_log").fetchone()[0]
+            )
+
+    def list_after(
+        self,
+        *,
+        after_sequence: int,
+        symbols: tuple[str, ...],
+        limit: int,
+    ) -> tuple[tuple[int, SipEvent], ...]:
+        if after_sequence < 0 or not symbols or not 1 <= limit <= 10_000:
+            raise ValueError("event query is invalid")
+        normalized = tuple(sorted({symbol.strip().upper() for symbol in symbols if symbol.strip()}))
+        if not normalized:
+            raise ValueError("at least one symbol is required")
+        placeholders = ",".join("?" for _ in normalized)
+        query = (
+            "SELECT sequence, event_type, event_json FROM raw_sip_event_log "
+            f"WHERE sequence>? AND symbol IN ({placeholders}) "
+            "ORDER BY sequence LIMIT ?"
+        )
+        with _connect(self.path) as connection:
+            rows = connection.execute(
+                query, (after_sequence, *normalized, limit)
+            ).fetchall()
+        events: list[tuple[int, SipEvent]] = []
+        for row in rows:
+            model = SipBar if str(row["event_type"]) == "bar" else SipQuote
+            events.append((int(row["sequence"]), model.model_validate_json(str(row["event_json"]))))
+        return tuple(events)
 
 
 class SharedFeatureStore:

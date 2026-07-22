@@ -6,6 +6,8 @@ import os
 from contextlib import aclosing
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from cloud_strategy_platform.feature_store import RawSipEventStore, SharedFeatureStore
 from cloud_strategy_platform.market_data import AlpacaSipStream
 from cloud_strategy_platform.platform import CloudStrategyPlatform
@@ -55,6 +57,7 @@ async def _run(args: argparse.Namespace) -> None:
 
 
 def main() -> int:
+    load_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser()
     parser.add_argument("--registry-db", type=Path, default=ROOT / "runs/platform.sqlite3")
     parser.add_argument("--raw-db", type=Path, default=ROOT / "runs/raw-sip.sqlite3")

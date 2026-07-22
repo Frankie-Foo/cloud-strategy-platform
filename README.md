@@ -3,8 +3,8 @@
 Independent, signal-only cloud platform for shared Alpaca SIP ingestion, versioned
 point-in-time features, isolated multi-strategy research, and least-privilege APIs.
 
-This is not a Broker or execution service. The repository contains no order adapter,
-account access, position access, TradePlan submission, or short-selling action.
+This service owns Alpaca credentials and exposes a narrowly scoped Paper execution API.
+It contains no Live endpoint, generic Alpaca proxy, TradePlan promotion, or short action.
 
 ## Repository boundary
 
@@ -12,6 +12,8 @@ account access, position access, TradePlan submission, or short-selling action.
 - Strategy configuration, selection, backtest, Paper/shadow, and review artifacts are
   isolated by `strategy_id`.
 - AI investment services use an HTTPS `features:read` token.
+- AI market ingestion uses a separate `market-data:read` token.
+- AI Paper execution uses a separate `paper:write` token; writes are disabled by default.
 - Collaborators use a strategy-specific `signals:read` token.
 - Raw SIP events and proxy capabilities are never exposed by HTTP.
 - Custom Python runs only in the locked-down container under
@@ -35,8 +37,25 @@ Register a strategy, issue a service token, and start the loopback API:
 .\.venv\Scripts\python -m scripts.register_strategy strategy.json --activate
 .\.venv\Scripts\python -m scripts.issue_token `
   --principal ai-quant --scope features:read
+.\.venv\Scripts\python -m scripts.issue_token `
+  --principal ai-quant-market --scope market-data:read
+.\.venv\Scripts\python -m scripts.issue_token `
+  --principal ai-quant-execution --scope paper:write
 .\.venv\Scripts\python -m scripts.serve_api --host 127.0.0.1 --port 8765
 ```
+
+For the local AI-investment client, install the independent API as a per-user Windows
+task and start it immediately:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_local_api_task.ps1
+```
+
+The installer prefers a restartable scheduled task. If Windows denies task registration,
+it installs a current-user Startup shortcut instead. Both paths listen only on
+`127.0.0.1:8765` and write logs under the ignored `runs/` directory. Internet-facing
+deployment still requires HTTPS through a reverse proxy; never expose this plain-HTTP
+listener beyond localhost.
 
 For production, keep the Python server on a private interface behind an authenticated
 TLS reverse proxy. Never bind it directly to the public internet.

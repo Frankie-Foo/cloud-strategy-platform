@@ -302,7 +302,13 @@ class StrategyRegistry:
                 """,
                 (digest,),
             ).fetchone()
-        if row is None or str(row["scope"]) != scope.value:
+        if row is None:
+            raise AuthorizationError("token scope is not authorized")
+        granted_scope = AccessScope(str(row["scope"]))
+        allowed = granted_scope is scope or (
+            granted_scope is AccessScope.PAPER_WRITE and scope is AccessScope.PAPER_READ
+        )
+        if not allowed:
             raise AuthorizationError("token scope is not authorized")
         granted_strategy = None if row["strategy_id"] is None else str(row["strategy_id"])
         if scope is AccessScope.SIGNALS_READ and granted_strategy != strategy_id:
