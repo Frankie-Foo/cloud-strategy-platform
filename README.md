@@ -1,7 +1,7 @@
 # Cloud Strategy Platform
 
-Independent, signal-only cloud platform for shared Alpaca SIP ingestion, versioned
-point-in-time features, isolated multi-strategy research, and least-privilege APIs.
+Independent cloud platform for shared Alpaca SIP ingestion, versioned point-in-time
+features, isolated multi-strategy research, and least-privilege APIs.
 
 This service owns Alpaca credentials and exposes a narrowly scoped Paper execution API.
 It contains no Live endpoint, generic Alpaca proxy, TradePlan promotion, or short action.
@@ -15,7 +15,10 @@ It contains no Live endpoint, generic Alpaca proxy, TradePlan promotion, or shor
 - AI market ingestion uses a separate `market-data:read` token.
 - AI Paper execution uses a separate `paper:write` token; writes are disabled by default.
 - Collaborators use a strategy-specific `signals:read` token.
-- Raw SIP events and proxy capabilities are never exposed by HTTP.
+- Normalized market events are exposed only to separately scoped AI service identities;
+  collaborator tokens can read derived signals only.
+- Alpaca credentials, arbitrary upstream requests, and generic proxy capabilities are
+  never exposed by HTTP.
 - Custom Python runs only in the locked-down container under
   `deploy/strategy-sandbox`.
 
@@ -72,3 +75,14 @@ The SIP owner reads `ALPACA_API_KEY_ID` and `ALPACA_API_SECRET_KEY` only in its 
 ```
 
 No other service identity should receive those two variables.
+
+## Market-data rights
+
+Publishing this source code does not grant a right to redistribute Alpaca or exchange
+market data. The `market-data:read` routes are intended for separately authorized,
+owner-controlled services. Do not issue that scope to collaborators or expose those
+routes as a public data feed. Alpaca states that its API data may not be redistributed;
+obtain written permission or an appropriate enterprise agreement before any internal or
+external redistribution. See Alpaca's
+[redistribution notice](https://alpaca.markets/support/redistribute-alpaca-api) and your
+current customer agreement.

@@ -65,3 +65,15 @@ an explicitly labeled design and is not presented as implemented.
   the implemented-versus-target labeling.
 - Repository acceptance: 15 tests passed, Ruff clean, and strict mypy success across
   24 source files.
+
+## C4 public repository release hygiene - 2026-07-22
+
+Status: implemented; GitHub CI execution is pending the branch push.
+
+- Corrected the repository boundary description so the documented normalized
+  `market-data:read` routes are not confused with collaborator signal access.
+- Added an explicit upstream market-data redistribution notice; publishing the software
+  does not publish or sublicense market data.
+- Added least-privilege GitHub Actions verification for pytest, Ruff, and strict mypy.
+- Added a security reporting policy that prohibits public disclosure of credentials,
+  account data, runtime databases, orders, and proprietary market-data samples.
