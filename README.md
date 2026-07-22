@@ -19,7 +19,12 @@ It contains no Live endpoint, generic Alpaca proxy, TradePlan promotion, or shor
 - Custom Python runs only in the locked-down container under
   `deploy/strategy-sandbox`.
 
-The API contract is documented in [docs/API.md](docs/API.md).
+API 文档分为三层：
+
+- [当前 v1 完整接口手册](docs/API.md)：逐接口参数、响应、错误、权限和调用示例；
+- [当前 v1 OpenAPI 3.1](docs/openapi-v1.json)：可导入 API 工具的机器可读合同；
+- [完整多策略目标 API](docs/PLATFORM_API_TARGET.md)：尚未实现的 `/v2` 设计和验收边界，
+  不与当前可调用接口混写。
 
 ## Verification
 

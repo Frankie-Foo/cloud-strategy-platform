@@ -43,3 +43,25 @@ is running; public internet deployment still requires an HTTPS reverse proxy.
   data for AAPL, and zero submitted orders.
 - Repository acceptance: 10 tests passed, Ruff clean, and strict mypy success across
   23 source files.
+
+## C3 complete API contract and target platform design - 2026-07-22
+
+Status: current v1 contract documented and automatically verified; target `/v2` remains
+an explicitly labeled design and is not presented as implemented.
+
+- Added an importable OpenAPI 3.1 contract for exactly the 13 currently implemented HTTP
+  operations, including scopes, parameters, request/response schemas, examples, errors,
+  idempotency rules, `Cache-Control: no-store`, and the Paper write gate.
+- Replaced the short API summary with a complete Chinese reference covering security
+  boundaries, token issuance, every route, field examples, error handling, retries,
+  cursor behavior, deployment, and known limitations.
+- Explicitly documented that current v1 Paper routes are account-global compatibility
+  routes and are not yet isolated by `strategy_id`.
+- Added a separate target-platform contract for strategy/version management, selection,
+  backtests, strategy Paper subledgers, reviews, Python sandbox jobs, artifacts, audit,
+  token lifecycle, quotas, migration, and staged acceptance.
+- Added executable documentation tests that verify the exact route/scope inventory,
+  write-gate errors, local OpenAPI references, forbidden route/secret exclusions, and
+  the implemented-versus-target labeling.
+- Repository acceptance: 15 tests passed, Ruff clean, and strict mypy success across
+  24 source files.
