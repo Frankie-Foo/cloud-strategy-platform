@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from collections.abc import AsyncGenerator
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -139,6 +139,7 @@ class AlpacaSipStream:
         self._api_key = api_key.strip()
         self._api_secret = api_secret.strip()
         self.symbols = normalized
+        self.connected_at_utc: datetime | None = None
 
     async def _subscribe(self, socket: WebSocketLike) -> None:
         await socket.recv()
@@ -157,6 +158,7 @@ class AlpacaSipStream:
             )
         )
         await socket.recv()
+        self.connected_at_utc = datetime.now(UTC)
 
     async def events(self) -> AsyncGenerator[SipEvent, None]:
         from websockets.asyncio.client import connect
@@ -170,6 +172,7 @@ class AlpacaSipStream:
             max_size=1_048_576,
             max_queue=16,
         ):
+            self.connected_at_utc = None
             await self._subscribe(cast(WebSocketLike, socket))
             try:
                 async for frame in socket:

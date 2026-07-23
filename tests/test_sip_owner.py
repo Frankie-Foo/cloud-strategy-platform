@@ -6,15 +6,18 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from cloud_strategy_platform.feature_store import RawSipEventStore
+from cloud_strategy_platform.contracts import MarketDataRuntimeState
+from cloud_strategy_platform.feature_store import RawSipEventStore, SharedFeatureStore
 from cloud_strategy_platform.market_data import SipBar, SipEvent, SipQuote
+from cloud_strategy_platform.platform import CloudStrategyPlatform
 from cloud_strategy_platform.registry import StrategyRegistry
-from scripts.run_sip_owner import _run, _should_ingest
+from scripts.run_sip_owner import _consume_window, _run, _should_ingest
 
 
 class FakeSipStream:
     def __init__(self, *, symbols: tuple[str, ...]):
         self.symbols = symbols
+        self.connected_at_utc: datetime | None = datetime.now(UTC)
 
     async def events(self) -> AsyncGenerator[SipEvent, None]:
         yield SipBar(
@@ -31,6 +34,16 @@ class FakeSipStream:
         )
         while True:
             await asyncio.sleep(1)
+
+
+class QuietSipStream:
+    connected_at_utc: datetime | None = datetime.now(UTC)
+
+    async def events(self) -> AsyncGenerator[SipEvent, None]:
+        while True:
+            await asyncio.sleep(1)
+            if False:
+                yield  # pragma: no cover
 
 
 def test_owner_samples_one_quote_per_symbol_second_but_never_drops_bars() -> None:
@@ -111,3 +124,46 @@ def test_owner_waits_for_a_subscription_then_ingests_events(
     assert len(seen_symbols) == 1
     assert all(symbols == ("OKLO", "SMCI") for symbols in seen_symbols)
     assert RawSipEventStore(raw_db).count() >= 1
+    runtime = StrategyRegistry(registry_db).market_runtime()
+    assert runtime is not None
+    assert runtime.state is MarketDataRuntimeState.STOPPED
+    assert runtime.reconnect_count >= 1
+
+
+def test_owner_reports_authenticated_connection_without_waiting_for_an_event(
+    tmp_path: Path,
+) -> None:
+    registry = StrategyRegistry(tmp_path / "registry.sqlite3")
+    now = datetime.now(UTC)
+    registry.set_market_subscription(
+        principal_id="ai-quant-market",
+        symbols=("AAPL",),
+        updated_at_utc=now,
+        expires_at_utc=now + timedelta(minutes=5),
+    )
+    platform = CloudStrategyPlatform(
+        registry=registry,
+        raw_store=RawSipEventStore(tmp_path / "raw.sqlite3"),
+        feature_store=SharedFeatureStore(tmp_path / "features.sqlite3"),
+    )
+
+    async def exercise() -> None:
+        await _consume_window(
+            stream=QuietSipStream(),
+            platform=platform,
+            registry=registry,
+            symbols=("AAPL",),
+            sampled_seconds={},
+            refresh_seconds=0.02,
+            seconds=0.06,
+            process_started_at_utc=now,
+            reconnect_count=0,
+        )
+
+    asyncio.run(exercise())
+    runtime = registry.market_runtime()
+    assert runtime is not None
+    assert runtime.state is MarketDataRuntimeState.CONNECTED
+    assert runtime.symbols == ("AAPL",)
+    assert runtime.connected_at_utc is not None
+    assert RawSipEventStore(tmp_path / "raw.sqlite3").count() == 0

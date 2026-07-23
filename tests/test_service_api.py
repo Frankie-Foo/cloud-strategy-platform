@@ -119,6 +119,7 @@ def _application(tmp_path: Path) -> tuple[ApiApplication, StrategyRegistry, Fake
             raw_store=raw,
             market_data=FakeHistoricalMarketData(),
             paper_broker=paper,
+            clock=lambda: NOW,
         ),
         registry,
         paper,

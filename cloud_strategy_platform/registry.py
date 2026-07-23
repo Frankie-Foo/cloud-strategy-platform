@@ -14,6 +14,8 @@ from cloud_strategy_platform.contracts import (
     AccessScope,
     ArtifactStage,
     DerivedSignal,
+    MarketDataRuntime,
+    MarketDataRuntimeState,
     SignalAction,
     StrategyArtifact,
     StrategyDefinition,
@@ -78,6 +80,10 @@ class StrategyRegistry:
                 );
                 CREATE INDEX IF NOT EXISTS ix_market_data_subscription_expiry
                     ON market_data_subscriptions(expires_at_utc);
+                CREATE TABLE IF NOT EXISTS market_data_runtime (
+                    runtime_id INTEGER PRIMARY KEY CHECK(runtime_id=1),
+                    runtime_json TEXT NOT NULL
+                );
                 """
             )
 
@@ -201,6 +207,51 @@ class StrategyRegistry:
                 raise ValueError("stored market-data subscription is invalid")
             symbols.update(value)
         return tuple(sorted(symbols))
+
+    def record_market_runtime(
+        self,
+        *,
+        state: MarketDataRuntimeState,
+        symbols: tuple[str, ...],
+        process_started_at_utc: datetime,
+        heartbeat_at_utc: datetime,
+        connected_at_utc: datetime | None,
+        last_event_at_utc: datetime | None,
+        last_error_code: str | None,
+        last_error_at_utc: datetime | None,
+        reconnect_count: int,
+    ) -> MarketDataRuntime:
+        runtime = MarketDataRuntime(
+            state=state,
+            symbols=symbols,
+            process_started_at_utc=process_started_at_utc,
+            heartbeat_at_utc=heartbeat_at_utc,
+            connected_at_utc=connected_at_utc,
+            last_event_at_utc=last_event_at_utc,
+            last_error_code=last_error_code,
+            last_error_at_utc=last_error_at_utc,
+            reconnect_count=reconnect_count,
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO market_data_runtime (runtime_id, runtime_json)
+                VALUES (1, ?)
+                ON CONFLICT(runtime_id) DO UPDATE SET
+                    runtime_json=excluded.runtime_json
+                """,
+                (runtime.model_dump_json(),),
+            )
+        return runtime
+
+    def market_runtime(self) -> MarketDataRuntime | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT runtime_json FROM market_data_runtime WHERE runtime_id=1"
+            ).fetchone()
+        if row is None:
+            return None
+        return MarketDataRuntime.model_validate_json(str(row[0]))
 
     def record_artifact(self, artifact: StrategyArtifact) -> StrategyArtifact:
         serialized = artifact.model_dump_json()

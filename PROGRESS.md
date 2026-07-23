@@ -96,3 +96,28 @@ loopback-only and production internet deployment still requires TLS and service 
   a minute bar, local quote timestamps continued advancing, and no order was submitted.
 - Repository acceptance: 21 tests passed, Ruff clean, and strict mypy success across
   26 source files.
+
+## C6 observable and resumable market-data delivery - 2026-07-23
+
+Status: implemented and locally verified; the service now distinguishes liveness,
+readiness, data availability, and historical coverage. Public multi-node deployment
+remains an external infrastructure task.
+
+- Preserved the exact `/health` response for old monitors and added `/ready` for the raw
+  ledger, active subscription union, fresh owner heartbeat, connected state, and symbol
+  parity.
+- Persisted the single SIP owner's startup, connection, reconnect, error, heartbeat,
+  symbol-union, and last-event state without exposing provider exception text or secrets.
+- Added scoped `/v1/market-data/status` diagnostics with subscription membership,
+  first/last event, last bar/quote, counts, sequence, age, market session, reason codes,
+  and a machine-readable fallback recommendation.
+- Added durable Server-Sent Events at `/v1/market-data/stream`. Event IDs are the raw
+  ledger sequence, heartbeats keep intermediaries alive, and `after`/`Last-Event-ID`
+  provide disconnect-safe replay.
+- Kept the original `bars` and `quotes` arrays and added per-symbol `coverage`. Empty
+  regular-session bar responses, boundary gaps, skipped minutes, whole-day candidates,
+  invalid timestamps, and source latency are explicit instead of collapsing to `[]`.
+- Deliberately labels the weekday session approximation and unobserved external IBKR
+  execution health; market health is never presented as an execution/fill guarantee.
+- Updated the complete OpenAPI/human contract to 17 current operations. Repository
+  acceptance: 28 tests passed, Ruff clean, and strict mypy clean.
