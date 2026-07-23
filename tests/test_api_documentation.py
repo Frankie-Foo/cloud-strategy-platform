@@ -11,9 +11,12 @@ HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
 
 EXPECTED_SCOPES = {
     ("GET", "/health"): None,
+    ("GET", "/ready"): None,
     ("GET", "/v1/strategies/{strategy_id}/signals"): "signals:read",
     ("GET", "/v1/features/{symbol}"): "features:read",
+    ("GET", "/v1/market-data/status"): "market-data:read",
     ("GET", "/v1/market-data/events"): "market-data:read",
+    ("GET", "/v1/market-data/stream"): "market-data:read",
     ("GET", "/v1/market-data/bars"): "market-data:read",
     ("GET", "/v1/market-data/quotes"): "market-data:read",
     ("GET", "/v1/market-data/news"): "market-data:read",

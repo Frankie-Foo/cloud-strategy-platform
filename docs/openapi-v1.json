@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Cloud Strategy Platform API",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "summary": "Implemented v1 boundary for derived signals, features, normalized SIP data, and guarded Alpaca Paper access.",
     "description": "This specification contains only routes implemented by the current server. Collaborator tokens are strategy-bound and can read derived signals only. Alpaca credentials, generic proxy routes, Live trading, and short selling are not part of the contract. The v1 Paper routes are account-global compatibility routes and are not yet isolated by strategy_id; see the target-platform design for the planned strategy-scoped contract."
   },
@@ -33,8 +33,8 @@
       "get": {
         "tags": ["Health"],
         "operationId": "getHealth",
-        "summary": "Check API process readiness",
-        "description": "Does not validate upstream Alpaca availability and does not disclose credentials, symbols, strategies, or account state.",
+        "summary": "Check API process liveness",
+        "description": "This compatibility response only proves that the HTTP process is alive. It deliberately does not validate the SIP owner, subscriptions, freshness, upstream Alpaca availability, or account state. Use /ready and the authenticated market-data status route for those checks.",
         "security": [],
         "responses": {
           "200": {
@@ -50,6 +50,28 @@
             }
           },
           "405": {"$ref": "#/components/responses/MethodNotAllowed"}
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "tags": ["Health"],
+        "operationId": "getReadiness",
+        "summary": "Check whether the raw store and SIP owner are ready",
+        "description": "Returns 503 when the raw store is absent, no active subscription exists, the owner heartbeat is older than 90 seconds, the owner is not connected, or its runtime symbols differ from the active subscription union. It does not disclose symbols or credentials.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The API, raw store, and SIP owner are ready.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReadinessResponse"}}}
+          },
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "503": {
+            "description": "One or more readiness components are not ready.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReadinessResponse"}}}
+          }
         }
       }
     },
@@ -183,6 +205,38 @@
         }
       }
     },
+    "/v1/market-data/status": {
+      "get": {
+        "tags": ["Normalized market data"],
+        "operationId": "getMarketDataStatus",
+        "summary": "Inspect subscriptions, SIP owner state, event bounds, and freshness",
+        "description": "Returns explicit per-symbol health and reason codes so a strategy can distinguish not subscribed, no data observed, owner unavailable, delayed, stale, healthy, and market closed. It also states that the external IBKR execution link is not observed by this service.",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "market-data:read",
+        "parameters": [
+          {
+            "name": "symbols",
+            "in": "query",
+            "required": false,
+            "description": "Optional comma-separated diagnostic subset. When omitted, all active subscribed symbols are returned.",
+            "schema": {"type": "string", "minLength": 1},
+            "example": "AAPL,SMCI"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Detailed market-data health snapshot.",
+            "headers": {"Cache-Control": {"$ref": "#/components/headers/CacheControl"}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MarketDataStatusResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
     "/v1/market-data/events": {
       "get": {
         "tags": ["Normalized market data"],
@@ -210,6 +264,43 @@
           "401": {"$ref": "#/components/responses/Unauthorized"},
           "404": {"$ref": "#/components/responses/NotFound"},
           "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/v1/market-data/stream": {
+      "get": {
+        "tags": ["Normalized market data"],
+        "operationId": "streamNormalizedSipEvents",
+        "summary": "Push normalized SIP events through a resumable SSE stream",
+        "description": "Server-Sent Events remove client polling. Each market-data event has an id equal to its durable sequence. Reconnect with Last-Event-ID or the after query parameter. Heartbeat comments keep idle connections alive; this is a derived internal stream, not the provider WebSocket or a raw proxy.",
+        "security": [{"bearerAuth": []}],
+        "x-required-scope": "market-data:read",
+        "parameters": [
+          {"$ref": "#/components/parameters/SymbolsQuery"},
+          {"$ref": "#/components/parameters/AfterSequence"},
+          {"$ref": "#/components/parameters/LastEventId"},
+          {"$ref": "#/components/parameters/HeartbeatSeconds"}
+        ],
+        "responses": {
+          "200": {
+            "description": "An SSE stream containing retry, heartbeat comments, and market-data events with durable ids.",
+            "headers": {
+              "Cache-Control": {"$ref": "#/components/headers/CacheControl"},
+              "X-Accel-Buffering": {
+                "description": "Disables reverse-proxy response buffering.",
+                "schema": {"type": "string", "const": "no"}
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {"type": "string"},
+                "example": "id: 42\nevent: market-data\ndata: {\"sequence\":42,\"event\":{\"event_type\":\"bar\",\"symbol\":\"AAPL\"}}\n\n"
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
           "503": {"$ref": "#/components/responses/Unavailable"}
         }
       }
@@ -556,6 +647,20 @@
         "description": "Exclusive raw event sequence cursor.",
         "schema": {"type": "integer", "minimum": 0, "default": 0}
       },
+      "LastEventId": {
+        "name": "Last-Event-ID",
+        "in": "header",
+        "required": false,
+        "description": "SSE resume cursor used when the after query parameter is omitted.",
+        "schema": {"type": "integer", "minimum": 0}
+      },
+      "HeartbeatSeconds": {
+        "name": "heartbeat_seconds",
+        "in": "query",
+        "required": false,
+        "description": "SSE heartbeat comment interval.",
+        "schema": {"type": "number", "minimum": 5, "maximum": 60, "default": 15}
+      },
       "EventLimit": {
         "name": "limit",
         "in": "query",
@@ -636,6 +741,25 @@
         "properties": {
           "api_version": {"$ref": "#/components/schemas/ApiVersion"},
           "status": {"type": "string", "const": "ready"}
+        }
+      },
+      "ReadinessResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "status", "components"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "status": {"type": "string", "enum": ["ready", "not_ready"]},
+          "components": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["api", "raw_store", "sip_owner"],
+            "properties": {
+              "api": {"type": "string", "const": "ready"},
+              "raw_store": {"type": "string", "enum": ["ready", "not_ready"]},
+              "sip_owner": {"type": "string", "enum": ["ready", "not_ready"]}
+            }
+          }
         }
       },
       "DerivedSignal": {
@@ -779,6 +903,87 @@
           "start_after_sequence": {"type": "integer", "minimum": 0}
         }
       },
+      "MarketSessionStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["session", "asof_utc", "timezone", "calendar_accuracy"],
+        "properties": {
+          "session": {"type": "string", "enum": ["pre_market", "regular", "after_hours", "closed"]},
+          "asof_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "timezone": {"type": "string", "const": "America/New_York"},
+          "calendar_accuracy": {"type": "string"}
+        }
+      },
+      "MarketOwnerStatus": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["state", "symbols", "heartbeat_at_utc", "heartbeat_age_seconds", "connected_at_utc", "last_event_at_utc", "last_error_code", "last_error_at_utc", "reconnect_count"],
+        "properties": {
+          "state": {"type": "string", "enum": ["starting", "waiting_for_subscription", "connecting", "connected", "reconnecting", "error", "stopped", "unavailable"]},
+          "symbols": {"type": "array", "items": {"$ref": "#/components/schemas/Symbol"}},
+          "process_started_at_utc": {"type": ["string", "null"], "format": "date-time"},
+          "heartbeat_at_utc": {"type": ["string", "null"], "format": "date-time"},
+          "heartbeat_age_seconds": {"type": ["number", "null"], "minimum": 0},
+          "connected_at_utc": {"type": ["string", "null"], "format": "date-time"},
+          "last_event_at_utc": {"type": ["string", "null"], "format": "date-time"},
+          "last_error_code": {"type": ["string", "null"]},
+          "last_error_at_utc": {"type": ["string", "null"], "format": "date-time"},
+          "reconnect_count": {"type": "integer", "minimum": 0}
+        }
+      },
+      "MarketSymbolStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "subscribed", "status", "first_event_at_utc", "last_event_at_utc", "last_bar_at_utc", "last_quote_at_utc", "last_event_age_seconds", "event_count", "bar_count", "quote_count", "last_sequence", "reason_codes"],
+        "properties": {
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "subscribed": {"type": "boolean"},
+          "status": {"type": "string", "enum": ["healthy", "delayed", "stale", "unavailable", "market_closed"]},
+          "first_event_at_utc": {"type": ["string", "null"], "format": "date-time"},
+          "last_event_at_utc": {"type": ["string", "null"], "format": "date-time"},
+          "last_bar_at_utc": {"type": ["string", "null"], "format": "date-time"},
+          "last_quote_at_utc": {"type": ["string", "null"], "format": "date-time"},
+          "last_event_age_seconds": {"type": ["number", "null"], "minimum": 0},
+          "event_count": {"type": "integer", "minimum": 0},
+          "bar_count": {"type": "integer", "minimum": 0},
+          "quote_count": {"type": "integer", "minimum": 0},
+          "last_sequence": {"type": ["integer", "null"], "minimum": 1},
+          "reason_codes": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "MarketDataStatusResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "observed_at_utc", "status", "fallback_recommended", "market_session", "owner", "subscription", "symbols", "execution_health"],
+        "properties": {
+          "api_version": {"$ref": "#/components/schemas/ApiVersion"},
+          "observed_at_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "status": {"type": "string", "enum": ["healthy", "degraded", "unavailable", "market_closed"]},
+          "fallback_recommended": {"type": "boolean"},
+          "market_session": {"$ref": "#/components/schemas/MarketSessionStatus"},
+          "owner": {"$ref": "#/components/schemas/MarketOwnerStatus"},
+          "subscription": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["active_symbols", "requested_symbols", "active_symbol_count"],
+            "properties": {
+              "active_symbols": {"type": "array", "items": {"$ref": "#/components/schemas/Symbol"}},
+              "requested_symbols": {"type": "array", "items": {"$ref": "#/components/schemas/Symbol"}},
+              "active_symbol_count": {"type": "integer", "minimum": 0}
+            }
+          },
+          "symbols": {"type": "array", "items": {"$ref": "#/components/schemas/MarketSymbolStatus"}},
+          "execution_health": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["status", "reason"],
+            "properties": {
+              "status": {"type": "string", "const": "external_not_observed"},
+              "reason": {"type": "string"}
+            }
+          }
+        }
+      },
       "MarketEventsResponse": {
         "type": "object",
         "additionalProperties": false,
@@ -808,13 +1013,58 @@
           "adjustment": {"type": "string", "const": "split_adjusted"}
         }
       },
+      "MissingMinuteInterval": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start_utc", "end_utc", "missing_minutes"],
+        "properties": {
+          "start_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "end_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "missing_minutes": {"type": "integer", "minimum": 1}
+        }
+      },
+      "HistoricalSymbolCoverage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["symbol", "status", "row_count", "first_at_utc", "last_at_utc", "last_age_seconds", "missing_minute_count", "missing_intervals", "potential_missing_regular_dates", "reason_codes"],
+        "properties": {
+          "symbol": {"$ref": "#/components/schemas/Symbol"},
+          "status": {"type": "string", "enum": ["observed", "empty", "gaps_detected", "invalid_timestamps"]},
+          "row_count": {"type": "integer", "minimum": 0},
+          "first_at_utc": {"type": ["string", "null"], "format": "date-time"},
+          "last_at_utc": {"type": ["string", "null"], "format": "date-time"},
+          "last_age_seconds": {"type": ["number", "null"], "minimum": 0},
+          "missing_minute_count": {"type": "integer", "minimum": 0},
+          "missing_intervals": {"type": "array", "items": {"$ref": "#/components/schemas/MissingMinuteInterval"}},
+          "potential_missing_regular_dates": {"type": "array", "items": {"type": "string", "format": "date"}},
+          "reason_codes": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "HistoricalCoverage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "source", "feed", "kind", "requested_start_utc", "requested_end_utc", "calendar_basis", "session_calendar_accuracy", "fallback_recommended", "symbols"],
+        "properties": {
+          "status": {"type": "string", "enum": ["observed", "empty", "gaps_detected", "invalid_timestamps"]},
+          "source": {"type": "string", "const": "cloud.alpaca.market_data"},
+          "feed": {"type": "string", "const": "sip"},
+          "kind": {"type": "string", "enum": ["bars", "quotes"]},
+          "requested_start_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "requested_end_utc": {"$ref": "#/components/schemas/UtcTimestamp"},
+          "calendar_basis": {"type": "string", "const": "observed regular-session continuity"},
+          "session_calendar_accuracy": {"type": "string"},
+          "fallback_recommended": {"type": "boolean"},
+          "symbols": {"type": "array", "items": {"$ref": "#/components/schemas/HistoricalSymbolCoverage"}}
+        }
+      },
       "BarsResponse": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["api_version", "bars"],
+        "required": ["api_version", "bars", "coverage"],
         "properties": {
           "api_version": {"$ref": "#/components/schemas/ApiVersion"},
-          "bars": {"type": "array", "items": {"$ref": "#/components/schemas/HistoricalBar"}}
+          "bars": {"type": "array", "items": {"$ref": "#/components/schemas/HistoricalBar"}},
+          "coverage": {"$ref": "#/components/schemas/HistoricalCoverage"}
         }
       },
       "HistoricalQuote": {
@@ -839,10 +1089,11 @@
       "QuotesResponse": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["api_version", "quotes"],
+        "required": ["api_version", "quotes", "coverage"],
         "properties": {
           "api_version": {"$ref": "#/components/schemas/ApiVersion"},
-          "quotes": {"type": "array", "items": {"$ref": "#/components/schemas/HistoricalQuote"}}
+          "quotes": {"type": "array", "items": {"$ref": "#/components/schemas/HistoricalQuote"}},
+          "coverage": {"$ref": "#/components/schemas/HistoricalCoverage"}
         }
       },
       "NewsArticle": {

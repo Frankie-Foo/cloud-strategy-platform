@@ -13,7 +13,8 @@ It contains no Live endpoint, generic Alpaca proxy, TradePlan promotion, or shor
   isolated by `strategy_id`.
 - AI investment services use an HTTPS `features:read` token.
 - AI market ingestion uses a separate `market-data:write` token, which can lease symbols
-  and read the normalized event stream.
+  and read the normalized event stream. Realtime clients use resumable SSE; the durable
+  cursor endpoint remains available for compatibility.
 - AI Paper execution uses a separate `paper:write` token; writes are disabled by default.
 - Collaborators use a strategy-specific `signals:read` token.
 - Normalized market events are exposed only to separately scoped AI service identities;
@@ -30,12 +31,21 @@ API 文档分为三层：
 - [完整多策略目标 API](docs/PLATFORM_API_TARGET.md)：尚未实现的 `/v2` 设计和验收边界，
   不与当前可调用接口混写。
 
+Market-data operations deliberately separate process liveness from usable data:
+
+- `/health` only proves that the HTTP process is alive;
+- `/ready` proves that the raw ledger and the single SIP owner are currently ready;
+- `/v1/market-data/status` reports active subscriptions, owner heartbeat/reconnect
+  state, first/last observations, event age, and a fail-closed fallback recommendation;
+- historical bars and quotes include a per-symbol `coverage` object; regular-session
+  bar gaps and empty upstream responses are never represented as a healthy empty list.
+
 ## Verification
 
 ```powershell
 .\.venv\Scripts\python -m pytest -q
-.\.venv\Scripts\ruff check .
-.\.venv\Scripts\mypy cloud_strategy_platform scripts tests
+.\.venv\Scripts\python -m ruff check .
+.\.venv\Scripts\python -m mypy --strict .
 ```
 
 ## Local administration
@@ -81,6 +91,12 @@ No other service identity should receive those two variables.
 The realtime ledger keeps every minute bar and samples at most one quote per symbol per
 UTC second. This preserves NBBO freshness for the strategies without allowing a high-rate
 symbol to starve minute bars or the remaining subscriptions.
+
+This repository still uses one local SQLite ledger and one active API/SIP-owner pair.
+The readiness contract and restart loops make failure visible and recoverable, but they
+do not constitute a tested multi-node SLA. Public HTTPS, an external supervisor, backups,
+and failover storage remain deployment responsibilities; see the limitations in
+`docs/API.md`.
 
 ## Market-data rights
 

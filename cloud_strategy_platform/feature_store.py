@@ -107,6 +107,54 @@ class RawSipEventStore:
             events.append((int(row["sequence"]), model.model_validate_json(str(row["event_json"]))))
         return tuple(events)
 
+    def symbol_observability(
+        self, symbols: tuple[str, ...]
+    ) -> dict[str, dict[str, object]]:
+        normalized = tuple(
+            sorted({symbol.strip().upper() for symbol in symbols if symbol.strip()})
+        )
+        if not normalized:
+            return {}
+        placeholders = ",".join("?" for _ in normalized)
+        query = f"""
+            SELECT
+                symbol,
+                MIN(ts_utc) AS first_event_at_utc,
+                MAX(ts_utc) AS last_event_at_utc,
+                MAX(CASE WHEN event_type='bar' THEN ts_utc END) AS last_bar_at_utc,
+                MAX(CASE WHEN event_type='quote' THEN ts_utc END) AS last_quote_at_utc,
+                COUNT(*) AS event_count,
+                SUM(CASE WHEN event_type='bar' THEN 1 ELSE 0 END) AS bar_count,
+                SUM(CASE WHEN event_type='quote' THEN 1 ELSE 0 END) AS quote_count,
+                MAX(sequence) AS last_sequence
+            FROM raw_sip_event_log
+            WHERE symbol IN ({placeholders})
+            GROUP BY symbol
+        """
+        with _connect(self.path) as connection:
+            rows = connection.execute(query, normalized).fetchall()
+        return {
+            str(row["symbol"]): {
+                "first_event_at_utc": str(row["first_event_at_utc"]),
+                "last_event_at_utc": str(row["last_event_at_utc"]),
+                "last_bar_at_utc": (
+                    None
+                    if row["last_bar_at_utc"] is None
+                    else str(row["last_bar_at_utc"])
+                ),
+                "last_quote_at_utc": (
+                    None
+                    if row["last_quote_at_utc"] is None
+                    else str(row["last_quote_at_utc"])
+                ),
+                "event_count": int(row["event_count"]),
+                "bar_count": int(row["bar_count"]),
+                "quote_count": int(row["quote_count"]),
+                "last_sequence": int(row["last_sequence"]),
+            }
+            for row in rows
+        }
+
 
 class SharedFeatureStore:
     def __init__(self, path: str | Path):

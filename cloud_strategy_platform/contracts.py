@@ -58,6 +58,52 @@ class AccessScope(StrEnum):
     PAPER_WRITE = "paper:write"
 
 
+class MarketDataRuntimeState(StrEnum):
+    STARTING = "starting"
+    WAITING_FOR_SUBSCRIPTION = "waiting_for_subscription"
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    RECONNECTING = "reconnecting"
+    ERROR = "error"
+    STOPPED = "stopped"
+
+
+class MarketDataRuntime(FrozenModel):
+    state: MarketDataRuntimeState
+    symbols: tuple[str, ...]
+    process_started_at_utc: datetime
+    heartbeat_at_utc: datetime
+    connected_at_utc: datetime | None = None
+    last_event_at_utc: datetime | None = None
+    last_error_code: str | None = Field(
+        default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$"
+    )
+    last_error_at_utc: datetime | None = None
+    reconnect_count: int = Field(ge=0)
+
+    @field_validator("symbols")
+    @classmethod
+    def normalize_runtime_symbols(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(sorted({value.strip().upper() for value in values}))
+        if any(
+            re.fullmatch(r"[A-Z][A-Z0-9.-]{0,15}", value) is None
+            for value in normalized
+        ):
+            raise ValueError("runtime contains an invalid symbol")
+        return normalized
+
+    @field_validator(
+        "process_started_at_utc",
+        "heartbeat_at_utc",
+        "connected_at_utc",
+        "last_event_at_utc",
+        "last_error_at_utc",
+    )
+    @classmethod
+    def runtime_utc_timestamps(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else require_utc(value)
+
+
 class MarketDataSubscriptionRequest(FrozenModel):
     symbols: tuple[str, ...] = Field(min_length=1, max_length=500)
     replay_from_utc: datetime
